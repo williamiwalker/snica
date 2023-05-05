@@ -110,6 +110,7 @@ def ELBO(x, R, lds_params, log_hmm_params, phi, theta, nu, key,
                                     in_axes=-1, out_axes=(-1, -1))(x)
     elif len(phi) == 1:
         C = theta[0][0].T
+        print('C.shape',C.T.shape, R.shape, x.shape)
         np0 = C.T@R@x
         np1 = -0.5*C.T@R@C
         likelihood_natparams = (np0, jnp.repeat(np1[:, :, jnp.newaxis],

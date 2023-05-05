@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import jax.random as jrandom
 from jax import vmap
 from jax.lax import scan
-from jax.ops import index, index_update
+#from jax.ops import index, index_update
 
 
 def l2normalize(W, axis=0):
@@ -77,13 +77,16 @@ def unif_nica_layer(N, M, key, iter_4_cond=1e4):
 def init_nica_params(N, M, nonlin_layers, key, repeat_layers):
     '''BEWARE: Assumes factorized distribution
         and equal width in all hidden layers'''
+    print('func estimators REPLACED!')
     layer_sizes = [N] + [M]*nonlin_layers + [M]
     keys = jrandom.split(key, len(layer_sizes)-1)
     if repeat_layers:
         _keys = keys
         keys = jnp.repeat(_keys[0][None], _keys.shape[0], 0)
         if N != M:
-            keys = index_update(keys, index[1:], _keys[-1])
+            # REPLACED!!!!!!!!!
+            keys = keys.at[1:].set(_keys[-1])
+            # keys = index_update(keys, index[1:], _keys[-1])
     return [unif_nica_layer(n, m, k) for (n, m, k)
             in zip(layer_sizes[:-1], layer_sizes[1:], keys)]
 

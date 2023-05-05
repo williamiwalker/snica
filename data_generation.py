@@ -91,16 +91,17 @@ def gen_slds(T, K, d, paramkey, samplekey):
     paramkey, p_key = jrandom.split(paramkey)
     s_ldskey, s_hmmkey = jrandom.split(samplekey)
 
-    # generate variables
+    # generate variables (return mean and variances of generation)
     (A, pi), (B, b, b_init, _, _, Q, Q_init, _) = generate_slds(K, p_key)
 
-    # generate hidden markov chain
+    # generate hidden markov chain (return all discrete states)
     states = gen_markov_chain(pi, A, T, s_hmmkey)
 
-    # sample slds
+    # sample slds (use reparam trick with mean and precision)
     s_ldskeys = jrandom.split(s_ldskey, T)
     z_init = gaussian_sample_from_mu_prec(b_init[states[0]],
                                           Q_init[states[0]], s_ldskeys[0])
+    # make a function to sample using reparam trick and then scan to sample whole chain
     sample_func = make_slds_sampler(B, b, Q)
     z, z_mu = tree_prepend((z_init, b_init[states[0]]),
                            scan(sample_func, z_init,
@@ -112,6 +113,15 @@ def gen_slds(T, K, d, paramkey, samplekey):
 
 def gen_slds_nica(N, M, T, K, d, L, paramkey, samplekey, repeat_layers=False):
     # generate several slds
+    '''
+    N: number of ICs
+    M: dimension of observed data
+    T: number of timesteps
+    K: number of HMM states. Fixed at 2 in experients
+    d: dimension of lds state. Fixed at 2 in experim
+    L: number of nonlinear layers; 0 = linear ICA
+    '''
+    
     paramkeys = jrandom.split(paramkey, N+1)
     samplekeys = jrandom.split(samplekey, N+1)
     z, z_mu, states, lds_params, hmm_params = vmap(

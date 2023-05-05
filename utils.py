@@ -13,7 +13,7 @@ import jax.numpy as jnp
 from jax import random as jrandom
 from jax import vmap
 from jax import jit, lax
-from jax.ops import index_update, index_add, index
+# from jax.ops import index_update, index_add, index
 from jax.lax import scan
 
 import pickle
@@ -165,11 +165,18 @@ def get_E_likelihood_natparams(likelih_natparams, qz_mu, n):
     d = qz_mu.shape[-1]
     v_n, W_n = likelih_natparams
     qs_mu = qz_mu[:, :, 0]
-    E_v_n = index_update(jnp.zeros((v_n.shape[0], d)), index[:, 0], v_n)
-    E_v_n = index_add(E_v_n, index[:, 0],
+    # REPLACED!!!!!!!!!
+    E_v_n = jnp.zeros((v_n.shape[0], d)).at[:, 0].set(v_n)
+    # E_v_n = index_update(jnp.zeros((v_n.shape[0], d)), index[:, 0], v_n)
+    # REPLACED!!!!!!!!!
+    E_v_n = E_v_n.at[:, 0].add(
                       2*((W_n*qs_mu).sum(0)-W_n[n]*qs_mu[n]))
-    E_W_n = index_update(jnp.zeros((v_n.shape[0], d, d)),
-                         index[:, 0, 0], W_n[n])
+    # E_v_n = index_add(E_v_n, index[:, 0],
+    #                   2*((W_n*qs_mu).sum(0)-W_n[n]*qs_mu[n]))
+    # REPLACED!!!!!!!!!
+    E_W_n = jnp.zeros((v_n.shape[0], d, d)).at[:, 0, 0].set(W_n[n])
+    # E_W_n = index_update(jnp.zeros((v_n.shape[0], d, d)),
+    #                      index[:, 0, 0], W_n[n])
     return E_v_n, E_W_n
 
 
@@ -198,22 +205,32 @@ def vrepeat_tuple(tpl, T):
 
 
 def tree_prepend(prep, tree):
-    preprended = jax.tree_multimap(
+    # REPLACED!!!!
+    preprended = jax.tree_map(
         lambda a, b: jnp.vstack((a[None], b)), prep, tree
     )
+    # preprended = jax.tree_multimap(
+    #     lambda a, b: jnp.vstack((a[None], b)), prep, tree
+    # )
     return preprended
 
 
 def tree_append(tree, app):
-    appended = jax.tree_multimap(
+    # REPLACED!!!!
+    appended = jax.tree_map(
         lambda a, b: jnp.vstack((a, b[None])), tree, app
     )
+    # appended = jax.tree_multimap(
+    #     lambda a, b: jnp.vstack((a, b[None])), tree, app
+    # )
     return appended
 
 
 def tree_sum(trees):
     '''Sum over pytrees'''
-    return jax.tree_multimap(lambda *x: sum(x), *trees)
+    # REPLACED!!!!
+    return jax.tree_map(lambda *x: sum(x), *trees)
+    # return jax.tree_multimap(lambda *x: sum(x), *trees)
 
 
 def tree_sub(tree1, tree2):
@@ -238,7 +255,9 @@ def tree_get_idx(idx, tree):
 
 def multi_tree_stack(trees):
     '''Stack trees along a new axis'''
-    return jax.tree_multimap(lambda *a: jnp.stack(a), *trees)
+    return jax.tree_map(lambda *a: jnp.stack(a), *trees)
+    # REPLACED!!!!
+    # return jax.tree_multimap(lambda *a: jnp.stack(a), *trees)
 
 
 # inv(L*L.T)*Y

@@ -98,6 +98,7 @@ def main():
                                                    args.k, args.d, args.l,
                                                    param_key, data_key,
                                                    repeat_layers=True)
+    print('generated data',x.shape, z.shape, z_mu.shape, states.shape)
 
     # we have not tried this option but could be useful in some cases
     if args.whiten:
