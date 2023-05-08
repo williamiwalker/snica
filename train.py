@@ -51,8 +51,8 @@ def full_train(x, f, z, z_mu, states, params, args, est_key):
     est_key, Rkey = jrandom.split(est_key)
     est_key, *hmmkeys = jrandom.split(est_key, 3)
     est_key, *ldskeys = jrandom.split(est_key, 6)
-    x_vars = jnp.diag(jnp.cov(x))
-    R_est = jnp.linalg.inv(jnp.diag(
+    x_vars = jnp.diag(jnp.cov(x)) # observations used to initiate variables!!!!!!!!!!!!!!!!!!!!!
+    R_est = jnp.linalg.inv(jnp.diag( # observations used to initiate variables!!!!!!!!!!!!!!!!!!!!!
         jrandom.uniform(Rkey, (M,), minval=0.1*jnp.min(x_vars),
                         maxval=0.5*jnp.max(x_vars))))
     hmm_est = jax.tree_map(
@@ -110,7 +110,7 @@ def full_train(x, f, z, z_mu, states, params, args, est_key):
 
     # define training step
     @partial(jit, static_argnums=(4, 5))
-    def training_step(epoch_num, params, opt_state, x,
+    def training_step(epoch_num, params, opt_state, x, # observations used in training!!!!!!!!!!!!!!!!!!!!!
                       inference_iters, num_samples, burnin, key):
         """Performs gradient step on the function estimator
                MLP parameters on the ELBO.
@@ -128,7 +128,7 @@ def full_train(x, f, z, z_mu, states, params, args, est_key):
         # get gradients
         (n_elbo, posteriors), g = value_and_grad(
             avg_neg_ELBO, argnums=(1, 2, 3, 4, 5,), has_aux=True)(
-                x, R_est, lds_est, hmm_est, phi, theta, nu,
+                x, R_est, lds_est, hmm_est, phi, theta, nu, # observations used to evaluate loss (ELBO)!!!!!!!!!!!!!!!!!!!!!
                 subkey, inference_iters, num_samples,
         )
 
@@ -158,7 +158,7 @@ def full_train(x, f, z, z_mu, states, params, args, est_key):
 
 
     @partial(jit, static_argnums=(4, 5))
-    def infer_step(epoch_num, params, opt_state, x,
+    def infer_step(epoch_num, params, opt_state, x, # observations used in inference!!!!!!!!!!!!!!!!!!!!!
                    inference_iters, num_samples, burnin, key):
         """Perform inference without gradient step for eval purposes
                MLP parameters on the ELBO.
@@ -172,7 +172,7 @@ def full_train(x, f, z, z_mu, states, params, args, est_key):
         nu = 1.
 
         # inference step
-        n_elbo, posteriors = avg_neg_ELBO(x, R_est, lds_est, hmm_est, phi,
+        n_elbo, posteriors = avg_neg_ELBO(x, R_est, lds_est, hmm_est, phi, # observations used to evaluate loss (ELBO)!!!!!!!!!!!!!!!!!!!!!
                                           theta, nu, subkey, inference_iters,
                                           num_samples)
         return n_elbo, posteriors
@@ -195,12 +195,12 @@ def full_train(x, f, z, z_mu, states, params, args, est_key):
         if args.eval_only:
             # infer posteriors for evaluation without grad step
             n_elbo, posteriors = infer_step(
-                epoch, all_params, opt_state, x, niters,
+                epoch, all_params, opt_state, x, niters, # observations used in inference!!!!!!!!!!!!!!!!!!!!!
                 num_samples, burnin_len, trainkey)
         else:
             # training step
             n_elbo, posteriors, all_params, opt_state = training_step(
-                epoch, all_params, opt_state, x, niters,
+                epoch, all_params, opt_state, x, niters, # observations used in training!!!!!!!!!!!!!!!!!!!!!
                 num_samples, burnin_len, trainkey)
 
         # evaluate

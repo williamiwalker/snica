@@ -93,6 +93,20 @@ def E_sampling_likelihood(x, s_sample, theta, R):
 @partial(jit, static_argnums=(8, 9,))
 def ELBO(x, R, lds_params, log_hmm_params, phi, theta, nu, key,
          inference_iters, num_samples):
+    '''
+
+    :param x: observations
+    :param R:
+    :param lds_params:
+    :param log_hmm_params:
+    :param phi: encoder NN params
+    :param theta:
+    :param nu: burn in/ annealing
+    :param key:
+    :param inference_iters:
+    :param num_samples:
+    :return:
+    '''
     # transform into natural parameter form
     M, T = x.shape
     N, K = log_hmm_params[0].shape

@@ -12,8 +12,15 @@ from sklearn.decomposition import PCA
 from data_generation import gen_slds_nica
 from train import full_train
 
+import torch
+import os, json, pickle
 # uncomment to debug NaNs
 #config.update("jax_debug_nans", True)
+
+sys.path.append("./../")
+
+from latent_confounders.utils import make_cifar10_maze_trajectory, make_MNIST_maze_trajectory
+
 
 
 def parse():
@@ -86,24 +93,90 @@ def parse():
 
 
 def main():
-    args = parse()
+    ###########################################################################################################
+    # Added
 
-    # generate data
-    param_key = jrandom.PRNGKey(args.param_seed)
-    data_key = jrandom.PRNGKey(args.data_seed)
+    ###############################################################################
+    # get arguments
+    ###############################################################################
 
-    # generate simulated data
-    # !BEWARE d=2, k=2 fixed in data generation code
-    x, f, z, z_mu, states, *params = gen_slds_nica(args.n, args.m, args.t,
-                                                   args.k, args.d, args.l,
-                                                   param_key, data_key,
-                                                   repeat_layers=True)
-    print('generated data',x.shape, z.shape, z_mu.shape, states.shape)
+    SLURM_ARRAY_TASK_ID = sys.argv[1]
+    print('SLURM_ARRAY_TASK_ID ', SLURM_ARRAY_TASK_ID)
 
-    # we have not tried this option but could be useful in some cases
-    if args.whiten:
-        pca = PCA(whiten=True)
-        x = pca.fit_transform(x.T).T
+    ARG_FILE_NAME = 'arguments_HMM_MNIST_0_basic.json'
+    parent_folder = '/nfs/gatsbystor/williamw/latent_confounder/'
+    # parent_folder = '/home/william/mnt/gatsbystor/latent_confounder/'
+    ARGUMENT_FILE = parent_folder + 'arg_files/' + ARG_FILE_NAME
+
+    with open(ARGUMENT_FILE) as json_file:
+        ARGS = json.load(json_file)
+        print('PARAMETERS ', ARGS[SLURM_ARRAY_TASK_ID])
+        paramDict = ARGS[SLURM_ARRAY_TASK_ID]
+
+    OUTPUT_FOLDER = paramDict['MAIN_FOLDER'] + '/' + paramDict['SUB_FOLDER']
+    saveFolder = parent_folder + OUTPUT_FOLDER + '/'
+
+    if paramDict['data_source'] == 'MNIST':
+        data_folder = 'HMM_shared_data_MNIST_0/'
+    elif paramDict['data_source'] == 'cifar10':
+        data_folder = 'HMM_shared_data_cifar_1/'
+
+    ###############################################################################
+    # check if cuda is available
+    ###############################################################################
+
+    cuda = torch.cuda.is_available()
+    if cuda:
+        print('cuda available')
+
+    device = torch.device("cuda" if cuda else "cpu")
+
+    # check if using CUDA
+    kwargs = {'num_workers': 1, 'pin_memory': True} if cuda else {}
+
+    if os.path.exists(saveFolder):
+        print('overwrite')
+    else:
+        os.makedirs(saveFolder)
+
+    # Data type: float64 / float32
+    data_type = torch.float32
+    torch.set_default_dtype(data_type)
+    ###########################################################################################################
+
+
+    # args = parse()
+    #
+    # # generate data
+    # param_key = jrandom.PRNGKey(args.param_seed)
+    # data_key = jrandom.PRNGKey(args.data_seed)
+    #
+    # # generate simulated data
+    # # !BEWARE d=2, k=2 fixed in data generation code
+    # x, f, z, z_mu, states, *params = gen_slds_nica(args.n, args.m, args.t,
+    #                                                args.k, args.d, args.l,
+    #                                                param_key, data_key,
+    #                                                repeat_layers=True)
+    # print('generated data',x.shape, z.shape, z_mu.shape, states.shape)
+
+    ###########################################################################################################
+    # Added
+    timesteps = paramDict['timesteps']
+    num_sequences = paramDict['num_sequences']
+    if paramDict['saved_samples']:
+        print('using saved samples')
+        samples = pickle.load(open(parent_folder + data_folder + str(timesteps)+'_samples.pkl', 'rb'))
+        true_states, true_transition_mat = samples['true_states'], samples['true_transition_mat']
+    obs_shuffle, obs_non_shuffle, all_actions, true_states, true_transition_mat = make_cifar10_maze_trajectory(
+        timesteps, device,
+        true_states=true_states, true_transition_mat=true_transition_mat, batch_size=paramDict['batch_size'],
+        num_sequences=paramDict['num_sequences'])
+    ###########################################################################################################
+
+    # # we have not tried this option but could be useful in some cases
+    # if args.whiten:
+    #     pca = PCA(whiten=True)
+    #     x = pca.fit_transform(x.T).T
 
     # train
     est_params, posteriors, best_elbo = full_train(x, f, z, z_mu, states,

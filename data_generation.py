@@ -4,7 +4,7 @@ from jax.config import config
 config.update("jax_enable_x64", True)
 
 
-from jax import jit, vmap
+from jax import jit, vmap, value_and_grad
 from jax.lax import scan
 import jax.numpy as jnp
 from jax.numpy.linalg import inv
@@ -14,6 +14,19 @@ import matplotlib.pyplot as plt
 from func_estimators import init_nica_params, nica_mlp
 from utils import gaussian_sample_from_mu_prec, invmp, tree_prepend
 from utils import multi_tree_stack
+
+
+import numpy as np
+from torch.utils import data
+from torchvision.datasets import MNIST
+
+# import tensorflow_datasets as tfds
+from flax import linen as nn
+# from flax.metrics import tensorboard
+# from flax.training import train_state
+import optax
+
+
 
 def ar2_lds(alpha, beta, mu, vz, vz0, vx):
     B = jnp.array([[1 + alpha - beta, -alpha], [1.0, .0]])
@@ -121,6 +134,23 @@ def gen_slds_nica(N, M, T, K, d, L, paramkey, samplekey, repeat_layers=False):
     d: dimension of lds state. Fixed at 2 in experim
     L: number of nonlinear layers; 0 = linear ICA
     '''
+
+    # Define our dataset, using torch datasets
+    batch_size = 128
+    mnist_dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
+    training_generator = NumpyLoader(mnist_dataset, batch_size=batch_size, num_workers=0)
+
+    # Get the full train dataset (for checking accuracy while training)
+    train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
+    # train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
+    train_labels = np.array(mnist_dataset.train_labels)
+
+    # Get full test dataset
+    mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
+    test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1),
+                            dtype=jnp.float32)
+    # test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
+
     
     paramkeys = jrandom.split(paramkey, N+1)
     samplekeys = jrandom.split(samplekey, N+1)
@@ -141,7 +171,36 @@ def gen_slds_nica(N, M, T, K, d, L, paramkey, samplekey, repeat_layers=False):
     Rxvar_ratio = jnp.mean(jnp.diag(invmp(R, jnp.eye(R.shape[0]))
                                     / jnp.cov(x)))
     print(' *inv(R)/xvar: ', Rxvar_ratio)
+    print('obs shape',x.shape)
     return x, f, z, z_mu, states, likelihood_params, lds_params, hmm_params
+
+
+def gen_MNIST(N, M, T, K, d, L, paramkey, samplekey, repeat_layers=False):
+    # generate several slds
+    '''
+    N: number of ICs
+    M: dimension of observed data
+    T: number of timesteps
+    K: number of HMM states. Fixed at 2 in experients
+    d: dimension of lds state. Fixed at 2 in experim
+    L: number of nonlinear layers; 0 = linear ICA
+    '''
+
+    # Define our dataset, using torch datasets
+    batch_size = 128
+    mnist_dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
+    training_generator = NumpyLoader(mnist_dataset, batch_size=batch_size, num_workers=0)
+
+    # Get the full train dataset (for checking accuracy while training)
+    train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
+    # train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
+    train_labels = np.array(mnist_dataset.train_labels)
+
+    # Get full test dataset
+    mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
+    test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1),
+                            dtype=jnp.float32)
+    # test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 
 
 if __name__ == "__main__":
@@ -181,3 +240,94 @@ if __name__ == "__main__":
     plt.plot(z_mu[:, :200, 0].T)
     plt.show()
     pdb.set_trace()
+
+
+
+
+
+
+############################################################################################################
+# ADDED FOR MNIST
+############################################################################################################
+
+# def get_datasets():
+#   """Load MNIST train and test datasets into memory."""
+#   ds_builder = tfds.builder('mnist')
+#   ds_builder.download_and_prepare()
+#   train_ds = tfds.as_numpy(ds_builder.as_dataset(split='train', batch_size=-1))
+#   test_ds = tfds.as_numpy(ds_builder.as_dataset(split='test', batch_size=-1))
+#   train_ds['image'] = jnp.float32(train_ds['image']) / 255.
+#   test_ds['image'] = jnp.float32(test_ds['image']) / 255.
+#   return train_ds, test_ds
+
+
+class CNN(nn.Module):
+  """A simple CNN model."""
+
+  @nn.compact
+  def __call__(self, x):
+    x = nn.Conv(features=32, kernel_size=(3, 3))(x)
+    x = nn.relu(x)
+    x = nn.avg_pool(x, window_shape=(2, 2), strides=(2, 2))
+    x = nn.Conv(features=64, kernel_size=(3, 3))(x)
+    x = nn.relu(x)
+    x = nn.avg_pool(x, window_shape=(2, 2), strides=(2, 2))
+    x = x.reshape((x.shape[0], -1))  # flatten
+    x = nn.Dense(features=256)(x)
+    x = nn.relu(x)
+    x = nn.Dense(features=10)(x)
+    return x
+
+
+@jit
+def apply_model(state, images, labels):
+  """Computes gradients, loss and accuracy for a single batch."""
+  def loss_fn(params):
+    logits = state.apply_fn({'params': params}, images)
+    one_hot = nn.one_hot(labels, 10)
+    loss = jnp.mean(optax.softmax_cross_entropy(logits=logits, labels=one_hot))
+    return loss, logits
+
+  grad_fn = value_and_grad(loss_fn, has_aux=True)
+  (loss, logits), grads = grad_fn(state.params)
+  accuracy = jnp.mean(jnp.argmax(logits, -1) == labels)
+  return grads, loss, accuracy
+
+
+@jit
+def update_model(state, grads):
+  return state.apply_gradients(grads=grads)
+
+
+
+
+def numpy_collate(batch):
+  if isinstance(batch[0], np.ndarray):
+    return np.stack(batch)
+  elif isinstance(batch[0], (tuple,list)):
+    transposed = zip(*batch)
+    return [numpy_collate(samples) for samples in transposed]
+  else:
+    return np.array(batch)
+
+class NumpyLoader(data.DataLoader):
+  def __init__(self, dataset, batch_size=1,
+                shuffle=False, sampler=None,
+                batch_sampler=None, num_workers=0,
+                pin_memory=False, drop_last=False,
+                timeout=0, worker_init_fn=None):
+    super(self.__class__, self).__init__(dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        sampler=sampler,
+        batch_sampler=batch_sampler,
+        num_workers=num_workers,
+        collate_fn=numpy_collate,
+        pin_memory=pin_memory,
+        drop_last=drop_last,
+        timeout=timeout,
+        worker_init_fn=worker_init_fn)
+
+class FlattenAndCast(object):
+  def __call__(self, pic):
+    return np.ravel(np.array(pic, dtype=jnp.float32))
