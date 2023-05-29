@@ -7,10 +7,13 @@ import pdb
 import jax.nn as nn
 import jax.numpy as jnp
 import jax.random as jrandom
-from jax import vmap
+from jax import vmap, value_and_grad, jit
 from jax.lax import scan
 #from jax.ops import index, index_update
+import optax
 
+from flax import linen as fnn
+from flax.training import train_state
 
 def l2normalize(W, axis=0):
     """Normalizes MLP weight matrices.
@@ -216,3 +219,130 @@ if __name__ == "__main__":
     x_dim = 10
     ica_params = init_nica_params(s_dim, x_dim, 0, key, repeat_layers=False)
     unif_nica_layer(4, 5, key, iter_4_cond=1e3)
+
+
+def create_encoder_train_state(rng, config):
+  """Creates initial `TrainState`."""
+  cnn = encoder_CNN(c_out=config.n)
+  params = cnn.init(rng, jnp.ones([32, 32, 3]))['params']
+  # tx = optax.sgd(config.nn_learning_rate, config.momentum)
+  tx = optax.adam(config.nn_learning_rate)
+  return train_state.TrainState.create(
+      apply_fn=cnn.apply, params=params, tx=tx)
+
+def create_decoder_train_state(rng, config):
+  """Creates initial `TrainState`."""
+  cnn = decoder_CNN(c_out=3,c_input=config.n)
+  params = cnn.init(rng, jnp.ones(config.n,))['params']
+  # tx = optax.sgd(config.nn_learning_rate, config.momentum)
+  tx = optax.adam(config.nn_learning_rate)
+  return train_state.TrainState.create(
+      apply_fn=cnn.apply, params=params, tx=tx)
+
+
+# class encoder_CNN(fnn.Module):
+#   """A simple CNN model."""
+#   c_out: int
+#
+#   @fnn.compact
+#   def __call__(self, x):
+#     x = fnn.Conv(features=32, kernel_size=(3, 3))(x)
+#     x = fnn.relu(x)
+#     x = fnn.avg_pool(x, window_shape=(2, 2), strides=(2, 2))
+#     x = fnn.Conv(features=64, kernel_size=(3, 3))(x)
+#     x = fnn.relu(x)
+#     x = fnn.avg_pool(x, window_shape=(2, 2), strides=(2, 2))
+#     # x = x.reshape((x.shape[0], -1))  # flatten
+#     x = x.ravel()
+#     x = fnn.Dense(features=256)(x)
+#     x = fnn.relu(x)
+#     x = fnn.Dense(features=2*self.c_out)(x)
+#     v, W_diag = jnp.split(x.reshape(2*self.c_out), 2)
+#     W = -jnp.diag(nn.softplus(W_diag))
+#     return v, W
+
+class encoder_CNN(fnn.Module):
+  """A simple CNN model."""
+  c_out: int
+
+  @fnn.compact
+  def __call__(self, x):
+    x = fnn.Conv(features=5, kernel_size=(5, 5))(x)
+    x = fnn.max_pool(x, window_shape=(2, 2), strides=(2, 2))
+    x = fnn.relu(x)
+    x = fnn.Conv(features=8, kernel_size=(5, 5))(x)
+    x = fnn.max_pool(x, window_shape=(2, 2), strides=(2, 2))
+    x = fnn.relu(x)
+    # x = x.reshape((x.shape[0], -1))  # flatten
+    x = x.ravel()
+    x = fnn.Dense(features=20)(x)
+    x = fnn.relu(x)
+    x = fnn.Dense(features=2*self.c_out)(x)
+    v, W_diag = jnp.split(x.reshape(2*self.c_out), 2)
+    W = -jnp.diag(nn.softplus(W_diag))
+    return v, W
+
+# class decoder_CNN(fnn.Module):
+#     c_out : int
+#     c_input : int
+#
+#     @fnn.compact
+#     def __call__(self, x):
+#         x = fnn.Dense(features=2*49*self.c_input)(x)
+#         x = fnn.gelu(x)
+#         x = x.reshape(7, 7, -1)
+#         x = fnn.ConvTranspose(features=32, kernel_size=(3, 3), strides=(2, 2))(x)
+#         x = fnn.gelu(x)
+#         x = fnn.Conv(features=64, kernel_size=(3, 3))(x)
+#         x = fnn.gelu(x)
+#         x = fnn.ConvTranspose(features=64, kernel_size=(3, 3), strides=(2, 2))(x)
+#         x = fnn.gelu(x)
+#         x = fnn.Conv(features=64, kernel_size=(3, 3))(x)
+#         x = fnn.gelu(x)
+#         x = fnn.ConvTranspose(features=self.c_out, kernel_size=(3, 3))(x)
+#         x = fnn.tanh(x)
+#         return x
+
+class decoder_CNN(fnn.Module):
+    c_out : int
+    c_input : int
+
+    @fnn.compact
+    def __call__(self, x):
+        x = fnn.Dense(features=2*64*self.c_input)(x)
+        x = fnn.gelu(x)
+        x = x.reshape(8, 8, -1)
+        x = fnn.ConvTranspose(features=32, kernel_size=(3, 3), strides=(2, 2))(x)
+        x = fnn.gelu(x)
+        x = fnn.Conv(features=32, kernel_size=(3, 3))(x)
+        x = fnn.gelu(x)
+        x = fnn.ConvTranspose(features=32, kernel_size=(3, 3), strides=(2, 2))(x)
+        x = fnn.gelu(x)
+        x = fnn.Conv(features=32, kernel_size=(3, 3))(x)
+        x = fnn.gelu(x)
+        x = fnn.ConvTranspose(features=self.c_out, kernel_size=(3, 3))(x)
+        x = fnn.tanh(x)
+        print('decoder x shape',x.shape)
+        return x
+
+
+
+
+@jit
+def apply_model(state, images, labels):
+  """Computes gradients, loss and accuracy for a single batch."""
+  def loss_fn(params):
+    logits = state.apply_fn({'params': params}, images)
+    one_hot = fnn.one_hot(labels, 10)
+    loss = jnp.mean(optax.softmax_cross_entropy(logits=logits, labels=one_hot))
+    return loss, logits
+
+  grad_fn = value_and_grad(loss_fn, has_aux=True)
+  (loss, logits), grads = grad_fn(state.params)
+  accuracy = jnp.mean(jnp.argmax(logits, -1) == labels)
+  return grads, loss, accuracy
+
+
+@jit
+def update_model(state, grads):
+  return state.apply_gradients(grads=grads)

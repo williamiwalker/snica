@@ -20,6 +20,13 @@ import numpy as np
 from torch.utils import data
 from torchvision.datasets import MNIST
 
+import torch
+
+import torchvision.datasets #import CIFAR100
+import torchvision.transforms as tt
+from torch.utils.data.dataloader import DataLoader
+from torch.utils.data import Dataset
+
 # import tensorflow_datasets as tfds
 from flax import linen as nn
 # from flax.metrics import tensorboard
@@ -135,23 +142,6 @@ def gen_slds_nica(N, M, T, K, d, L, paramkey, samplekey, repeat_layers=False):
     L: number of nonlinear layers; 0 = linear ICA
     '''
 
-    # Define our dataset, using torch datasets
-    batch_size = 128
-    mnist_dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
-    training_generator = NumpyLoader(mnist_dataset, batch_size=batch_size, num_workers=0)
-
-    # Get the full train dataset (for checking accuracy while training)
-    train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
-    # train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
-    train_labels = np.array(mnist_dataset.train_labels)
-
-    # Get full test dataset
-    mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
-    test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1),
-                            dtype=jnp.float32)
-    # test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
-
-    
     paramkeys = jrandom.split(paramkey, N+1)
     samplekeys = jrandom.split(samplekey, N+1)
     z, z_mu, states, lds_params, hmm_params = vmap(
@@ -201,6 +191,196 @@ def gen_MNIST(N, M, T, K, d, L, paramkey, samplekey, repeat_layers=False):
     test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1),
                             dtype=jnp.float32)
     # test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
+
+
+def make_cifar10_maze_trajectory(timesteps, true_states=None, true_transition_mat=None, batch_size=None, num_sequences=1):
+    '''
+    get HMM observations with 10 states and each state is a cifar10
+    '''
+    # set seed so all runs use same dataset
+    np.random.seed(seed=42)
+
+    num_states=10
+    num_diff_samples = 5000
+
+    if true_transition_mat is None:
+        # true transition matrix
+        transition_mat = 0.8 * np.eye(num_states, k=0) + 0.2 * np.eye(num_states, k=1)
+        transition_mat[-1,0] = 0.2
+        print('transition mat', transition_mat)
+    else:
+        transition_mat = true_transition_mat
+
+
+    if true_states is None:
+        all_states = torch.zeros(num_sequences, timesteps, dtype=int)
+        for ind_b in range(num_sequences):
+            # save observations
+            states = torch.zeros(timesteps, dtype=int)
+
+            # reset environment
+            states[0] = 0
+            # sample states
+            for indt in range(1, timesteps):
+                states[indt] = np.random.choice(10, p=transition_mat[states[int(indt - 1)]])
+
+            all_states[ind_b] = states
+    else:
+        states = torch.tensor(true_states, dtype=int)
+        all_states = states
+
+    transform = torchvision.transforms.Compose([
+                               torchvision.transforms.ToTensor(),
+                               torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                             ])
+    train_data = torchvision.datasets.CIFAR10(download=True, train=True, root="./data", transform=transform)
+
+    # replace x_obs with cifar10 images
+    labels = torch.tensor(train_data.targets)
+    all_images = torch.zeros(num_sequences, timesteps, 3, 32, 32)
+    for ind_b in range(num_sequences):
+        # save all images
+        X_image_obs = torch.zeros(timesteps, 3, 32, 32)
+        for ind_x in range(num_states):
+            # mask of which observations have ind_x value
+            if num_sequences > 1:
+                obs_indices = all_states[ind_b] == ind_x
+            else:
+                obs_indices = states == ind_x
+            # get indices of MNIST digits with correct labels
+            label_indices = (labels == ind_x).nonzero(as_tuple=True)[0]
+            cur_images = torch.zeros(torch.sum(obs_indices), 3, 32, 32)
+            if num_diff_samples > len(label_indices):
+                cur_num_diff_samples = len(label_indices)
+            else:
+                cur_num_diff_samples = num_diff_samples
+
+            # fill cur_images
+            for ind_c in range(torch.sum(obs_indices)):
+                cur_images[ind_c] = train_data[label_indices[np.random.randint(cur_num_diff_samples)]][0]
+
+            # make dataset with cur_images
+            X_image_obs[obs_indices] = cur_images
+        all_images[ind_b] = X_image_obs
+
+    actions = torch.zeros(num_sequences, timesteps)
+    actions[:, -1] = -1
+
+    print('observation shape and range', all_images.shape, torch.max(all_images[0, 0]), torch.min(all_images[0, 0]),
+          torch.max(all_images[1, 0]), torch.min(all_images[1, 0]))
+
+    all_images = torch.permute(all_images, (0, 1, 3, 4, 2))
+
+    # make into dataset
+    dset = DiscreteHMMDataset(all_states, images=all_images, actions=actions)
+    dloader_shuffle = DataLoader(dset, batch_size, num_workers=1, pin_memory=True, shuffle=True, collate_fn=numpy_collate)
+    dloader_non_shuffle = DataLoader(dset, batch_size, num_workers=1, pin_memory=True, shuffle=False, collate_fn=numpy_collate)
+    return dloader_shuffle, dloader_non_shuffle, all_states.cpu().numpy(), transition_mat.cpu().numpy()
+
+
+def make_MNIST_maze_trajectory(timesteps, true_states=None, true_transition_mat=None, batch_size=None, num_sequences=1):
+    '''
+    get HMM observations with 10 states and each state is an MNIST digit
+    '''
+    # set seed so all runs use same dataset
+    np.random.seed(seed=42)
+
+    num_states=10
+    num_diff_samples = 5000
+
+    if true_transition_mat is None:
+        # true transition matrix
+        transition_mat = 0.8 * np.eye(num_states, k=0) + 0.2 * np.eye(num_states, k=1)
+        transition_mat[-1,0] = 0.2
+        print('transition mat', transition_mat)
+    else:
+        transition_mat = true_transition_mat
+
+
+    if true_states is None:
+        all_states = torch.zeros(num_sequences, timesteps, dtype=int)
+        for ind_b in range(num_sequences):
+            # save observations
+            states = torch.zeros(timesteps, dtype=int)
+
+            # reset environment
+            states[0] = 0
+            # sample states
+            for indt in range(1, timesteps):
+                states[indt] = np.random.choice(10, p=transition_mat[states[int(indt - 1)]])
+
+            all_states[ind_b] = states
+    else:
+        states = torch.tensor(true_states, dtype=int)
+        all_states = states
+    transform = torchvision.transforms.Compose([
+                               torchvision.transforms.ToTensor(),
+                               torchvision.transforms.Normalize(
+                                 (0.1307,), (0.3081,))
+                             ])
+    train_data = torchvision.datasets.MNIST(download=True, train=True, root="./data", transform=transform)
+
+    # transform = torchvision.transforms.Compose([
+    #                            torchvision.transforms.ToTensor(),
+    #                            torchvision.transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    #                          ])
+    # train_data = torchvision.datasets.CIFAR10(download=True, train=True, root="./data", transform=transform)
+
+    # replace x_obs with MNIST images
+    labels = torch.tensor(train_data.train_labels)
+    all_images = torch.zeros(num_sequences, timesteps, 1, 28, 28)
+    for ind_b in range(num_sequences):
+        # save all images
+        X_image_obs = torch.zeros(timesteps, 1, 28, 28)
+        for ind_x in range(num_states):
+            # mask of which observations have ind_x value
+            if num_sequences >= 1:
+                obs_indices = all_states[ind_b] == ind_x
+            else:
+                obs_indices = states == ind_x
+            # get indices of MNIST digits with correct labels
+            label_indices = (labels == ind_x).nonzero(as_tuple=True)[0]
+            cur_images = torch.zeros(torch.sum(obs_indices), 1, 28, 28)
+            if num_diff_samples > len(label_indices):
+                cur_num_diff_samples = len(label_indices)
+            else:
+                cur_num_diff_samples = num_diff_samples
+
+            # fill cur_images
+            for ind_c in range(torch.sum(obs_indices)):
+                cur_images[ind_c] = train_data[label_indices[np.random.randint(cur_num_diff_samples)]][0]
+
+            # make dataset with cur_images
+            X_image_obs[obs_indices] = cur_images
+        all_images[ind_b] = X_image_obs
+
+    actions = torch.zeros(num_sequences, timesteps)
+    actions[:, -1] = -1
+
+    all_images = torch.permute(all_images, (0,1,3,4,2))
+
+    # print('observation shape and range',all_images.shape, torch.max(all_images[0,0]), torch.min(all_images[0,0]), torch.max(all_images[1,10]), torch.min(all_images[1,10]))
+
+    # make into dataset
+    dset = DiscreteHMMDataset(all_states, images=all_images, actions=actions)
+    dloader_shuffle = DataLoader(dset, batch_size, num_workers=1, pin_memory=True, shuffle=True, collate_fn=numpy_collate)
+    dloader_non_shuffle = DataLoader(dset, batch_size, num_workers=1, pin_memory=True, shuffle=False, collate_fn=numpy_collate)
+    return dloader_shuffle, dloader_non_shuffle, all_states.cpu().numpy(), transition_mat.cpu().numpy()
+
+
+class DiscreteHMMDataset(Dataset):
+    def __init__(self, true_states, images, actions):
+        self.true_states = true_states
+        self.images = images
+        self.actions = actions
+    def __len__(self):
+        return len(self.true_states)
+    def __getitem__(self, idx):
+        # sample = {'obs':self.images[idx], 'actions':self.actions[idx]}
+        sample = self.images[idx].numpy()
+        # sample = {'obs':self.images[idx]}
+        return sample
+
 
 
 if __name__ == "__main__":

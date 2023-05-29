@@ -22,6 +22,7 @@ import scipy as sp
 import matplotlib.pyplot as plt
 
 
+
 #@partial(jit, static_argnums=(0,))
 def get_prec_mat(n, prec_scale, key):
     '''Create a random covariance matrix
@@ -311,6 +312,34 @@ def matching_sources_corr(est_sources, true_sources, method="pearson"):
     return mean_abs_corr, s_est_sorted, cidx
 
 
+def best_prediction(posterior, labels):
+    # Find Best Prediction in case the train labels are permuted
+    # print('pred shape and label shape', predictions.shape, labels.shape)
+    # Number Of used Digits
+    predictions = np.argmax(posterior,axis=1)
+    ldigits = np.unique(predictions)
+    tdigits = np.unique(labels)
+    num_tdigits = len(tdigits)
+    num_ldigits = len(ldigits)
+    # print(num_ldigits,num_tdigits,ldigits,tdigits)
+    used_digits = np.arange(num_tdigits)
+
+    # Score Used to find Opt. Permutation
+    scor_tot = np.zeros((num_tdigits, num_tdigits))
+
+    for digit_id in range(num_tdigits):
+
+        # Prediction digit = digit_cur
+        # idx = (predictions == digit_cur)
+        idx = labels == digit_id
+
+        # How many times 'digit_cur' from prediction is mapped to each digit in label.
+        scor_tot[digit_id, :] = (np.expand_dims(predictions[idx], axis=0) == np.expand_dims(used_digits, axis=1)).sum(axis=1)
+
+    perm = np.argmax(scor_tot, axis=1)
+
+    return perm
+
 def nsym_grad(cov_g):
     '''Nonstandard symmetrization operator'''
     return cov_g+cov_g.T-jnp.eye(cov_g.shape[0])*cov_g
@@ -348,6 +377,39 @@ def plot_ic(u, z_mu, qu, qz_mu, qz_prec, ax0, ax1, ax2):
                      qz_mu[:, 0] - qz_sd, qz_mu[:, 0] + qz_sd, alpha=0.5)
     #ax2.set_xlim([0, T])
 
+def plot_states_learned(save_folder, u, qu, qz_mu, qz_prec, ax0, ax1, ax2):
+    T, K = qu.shape
+    qz_var = vmap(lambda a: invmp(a, jnp.eye(a.shape[0])))(qz_prec)
+    qz_sd = jnp.sqrt(qz_var[:, 0, 0])
+    max_u = np.max(u)
+
+    ax0.clear()
+    ax1.clear()
+    ax2.clear()
+    ax0.imshow(qu.T, aspect='auto', interpolation='none')
+    ax0.set_xlim([0, T])
+    ax0.axis('off')
+
+    switches = jnp.concatenate([jnp.array([0]),
+                                jnp.arange(1, T)[u[:-1] != u[1:]],
+                                jnp.array([T])])
+    # expand the colour map if K > 4
+    cmap = plt.colormaps['tab10'] # jnp.array([[1, 0, 0], [1, 1, 1], [0, 0, 1], [0, 1, 0]])
+    # cmap = plt.get_cmap('tab10')
+
+    for i in range(len(switches)-1):
+        # print('plot lens', len(cmap), u.shape, len(switches), i, switches[i])
+        ax1.axvspan(switches[i], switches[i+1], alpha=0.25,
+                    color=cmap(u[switches[i]]/max_u))
+    # ax1.plot(z_mu[:, 0], color='blue')
+    ax1.set_xlim([0, T])
+    ax2.plot(qz_mu[:, 0], color='red')
+    ax2.fill_between(jnp.arange(0, T),
+                     qz_mu[:, 0] - qz_sd, qz_mu[:, 0] + qz_sd, alpha=0.5)
+    #ax2.set_xlim([0, T])
+    plt.savefig(save_folder + 'learned_states.png')
+    plt.close()
+
 
 def save_best(epoch, args, params, optimizer_state, optimizer):
     name_dict = {"n": args.n,
@@ -381,6 +443,54 @@ def save_best(epoch, args, params, optimizer_state, optimizer):
                                                    state_filename), "wb"))
     cloudpickle.dump(optimizer, open(os.path.join(args.out_dir,
                                                   optx_filename), "wb"))
+
+
+def save_best_HMM(saveFolder, epoch, params, optimizer_state, optimizer, enc_params, enc_tx, dec_params, dec_tx):
+    params_filename = "_params_ckpt.pkl"
+    state_filename = "_state_ckpt.pkl"
+    optx_filename = "_tx_ckpt.pkl"
+    enc_params_filename = "_enc_params_ckpt.pkl"
+    enc_tx_filename = "_enc_tx_ckpt.pkl"
+    dec_params_filename = "_dec_params_ckpt.pkl"
+    dec_tx_filename = "_dec_tx_ckpt.pkl"
+    pickle.dump(params, open(os.path.join(saveFolder,
+                                          params_filename), "wb"))
+    cloudpickle.dump((epoch, optimizer_state), open(os.path.join(saveFolder,
+                                                   state_filename), "wb"))
+    cloudpickle.dump(optimizer, open(os.path.join(saveFolder,
+                                                  optx_filename), "wb"))
+    pickle.dump(enc_params, open(os.path.join(saveFolder,
+                                          enc_params_filename), "wb"))
+    pickle.dump(dec_params, open(os.path.join(saveFolder,
+                                          dec_params_filename), "wb"))
+    cloudpickle.dump(enc_tx, open(os.path.join(saveFolder,
+                                                  enc_tx_filename), "wb"))
+    cloudpickle.dump(dec_tx, open(os.path.join(saveFolder,
+                                                  dec_tx_filename), "wb"))
+
+def load_best_ckpt_HMM(saveFolder):
+    params_filename = "_params_ckpt.pkl"
+    state_filename = "_state_ckpt.pkl"
+    optx_filename = "_tx_ckpt.pkl"
+    enc_params_filename = "_enc_params_ckpt.pkl"
+    enc_tx_filename = "_enc_tx_ckpt.pkl"
+    dec_params_filename = "_dec_params_ckpt.pkl"
+    dec_tx_filename = "_dec_tx_ckpt.pkl"
+    params = pickle.load(open(os.path.join(saveFolder,
+                                           params_filename), "rb"))
+    enc_params = pickle.load(open(os.path.join(saveFolder,
+                                               enc_params_filename), "rb"))
+    dec_params = pickle.load(open(os.path.join(saveFolder,
+                                               dec_params_filename), "rb"))
+    epoch, opt_state = pickle.load(open(os.path.join(saveFolder,
+                                        state_filename), "rb"))
+    optimizer = pickle.load(open(os.path.join(saveFolder,
+                                              optx_filename), "rb"))
+    enc_tx = pickle.load(open(os.path.join(saveFolder,
+                                           enc_tx_filename), "rb"))
+    dec_tx = pickle.load(open(os.path.join(saveFolder,
+                                           dec_tx_filename), "rb"))
+    return epoch+1, params, opt_state, optimizer, enc_params, enc_tx, dec_params, dec_tx
 
 
 def load_best_ckpt(args):
@@ -418,6 +528,11 @@ def load_best_ckpt(args):
     return epoch+1, params, opt_state, optimizer
 
 
+def save_best_qu(saveFolder, qu):
+    filename = "_qu_ckpt.pkl"
+    pickle.dump(qu, open(os.path.join(saveFolder, filename), "wb"))
+
+
 if __name__ == "__main__":
     # create covariance matrix
     key = jrandom.PRNGKey(0)
@@ -428,3 +543,11 @@ if __name__ == "__main__":
     sample = vmap(lambda a, b, c: gaussian_sample_from_mu_prec(a, b, c),
                   (None, None, 0))(jnp.ones((2,)), jnp.eye(2)/10, keys)
     pdb.set_trace()
+
+def plot_loss(plot_folder, loss_tot):
+    plt.figure()
+    plt.plot(loss_tot)
+    plt.xlabel('Epochs')
+    plt.ylabel('Free Energy')
+    plt.savefig(plot_folder + 'free_energy.png')
+    plt.close()
